@@ -914,25 +914,36 @@ async function openMatch(id, sport) {
   document.getElementById('overlay').classList.add('open');
   document.getElementById('overlay-content').innerHTML = `<div style="padding:20px"><div class="skeleton" style="height:160px;border-radius:12px"></div><div class="skeleton sk-header" style="margin-top:16px"></div><div class="skeleton sk-row"></div><div class="skeleton sk-row"></div></div>`;
 
-  // Buscar el evento en los datos cargados
   let event = null;
+  let leagueId = '';
+
   if (sport === 'soccer') {
     for (const league of (allMatches.soccer || [])) {
-      event = league.events?.find(e => e.id === id);
-      if (event) { event._leagueName = league.name; break; }
+      const found = league.events?.find(e => e.id === id);
+      if (found) {
+        event = found;
+        event._leagueName = league.name;
+        event._leagueId = league.id;
+        leagueId = league.id;
+        break;
+      }
     }
   } else if (sport === 'basketball') {
     for (const league of (allMatches.basketball || [])) {
-      event = league.events?.find(e => e.id === id);
-      if (event) { event._leagueName = league.name; break; }
+      const found = league.events?.find(e => e.id === id);
+      if (found) { event = found; event._leagueName = league.name; break; }
     }
   }
 
-  if (event) renderMatchDetail(event, sport);
-  else document.getElementById('overlay-content').innerHTML = `<div class="empty-state"><div class="empty-icon">⚽</div><div class="empty-text">No se pudo cargar el partido</div></div>`;
+  if (!event) {
+    document.getElementById('overlay-content').innerHTML = `<div class="empty-state"><div class="empty-icon">⚽</div><div class="empty-text">No se pudo cargar el partido</div></div>`;
+    return;
+  }
+
+  renderMatchDetail(event, sport, leagueId);
 }
 
-function renderMatchDetail(event, sport) {
+function renderMatchDetail(event, sport, leagueId = '') {
   const comp = event.competitions?.[0];
   const home = comp?.competitors?.find(c => c.homeAway === 'home') || comp?.competitors?.[0];
   const away = comp?.competitors?.find(c => c.homeAway === 'away') || comp?.competitors?.[1];
@@ -1019,19 +1030,16 @@ function renderMatchDetail(event, sport) {
     }
   }
 
-  // Cargar lineup de jugadores
-  try {
-    const sport_league = event._leagueId || '';
-    const compId = comp?.id || event.id;
-    // Intentar obtener summary con lineup
-    fetchLineup(event.id, sport_league, home, away, html);
-  } catch(e) {
-    document.getElementById('overlay-content').innerHTML = html;
+  // Mostrar contenido base inmediatamente
+  document.getElementById('overlay-content').innerHTML = html;
+
+  // Luego intentar cargar lineup de forma no bloqueante
+  if (sport === 'soccer' && leagueId) {
+    fetchLineup(event.id, leagueId);
   }
 }
 
-async function fetchLineup(eventId, leagueId, home, away, baseHtml) {
-  document.getElementById('overlay-content').innerHTML = baseHtml;
+async function fetchLineup(eventId, leagueId) {
   try {
     // ESPN summary endpoint para lineup y stats de jugadores
     const summaryUrls = [
@@ -1088,7 +1096,12 @@ async function fetchLineup(eventId, leagueId, home, away, baseHtml) {
         const rating = statMap['rating'] || '';
         const mins = statMap['minutesPlayed'] || statMap['minutes'] || '';
 
-        lineupHtml += `<div class="player-row ${isStarter ? '' : 'sub-player'}" onclick="showPlayerStats('${name}', ${JSON.stringify(stats).replace(/'/g, '')})">
+        // Guardar stats en playerStatsCache para no pasar JSON en onclick
+        const pKey = eventId + '_' + jersey + '_' + name.replace(/\s/g,'');
+        window._playerCache = window._playerCache || {};
+        window._playerCache[pKey] = { name, stats };
+
+        lineupHtml += `<div class="player-row ${isStarter ? '' : 'sub-player'}" onclick="showPlayerStats('${pKey}')">
           <div class="player-jersey">${jersey}</div>
           <div class="player-pos">${pos}</div>
           <div class="player-name">${name}</div>
@@ -1105,15 +1118,21 @@ async function fetchLineup(eventId, leagueId, home, away, baseHtml) {
     }
     lineupHtml += `</div>`;
 
-    document.getElementById('overlay-content').innerHTML = baseHtml + lineupHtml;
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = lineupHtml;
+    document.getElementById('overlay-content').appendChild(wrapper);
   } catch(e) {
     console.warn('Lineup error:', e.message);
   }
 }
 
-function showPlayerStats(name, stats) {
+function showPlayerStats(key) {
   const panel = document.getElementById('player-panel');
   if (!panel) return;
+  const cached = window._playerCache?.[key];
+  if (!cached) return;
+  const name = cached.name;
+  const stats = cached.stats;
   
   const statLabels = {
     goals: 'Goles', assists: 'Asistencias', shots: 'Tiros', shotsOnTarget: 'Tiros al arco',
