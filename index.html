@@ -674,6 +674,7 @@ const LEAGUES=[
   {id:'usa.1',name:'MLS',flag:'🇺🇸'},
   {id:'arg.1',name:'Liga Argentina',flag:'🇦🇷'},
   {id:'chi.1',name:'Primera Chile',flag:'🇨🇱'},
+  {id:'chi.copa',name:'Copa Chile',flag:'🇨🇱'},
   {id:'bra.1',name:'Brasileirao',flag:'🇧🇷'},
   {id:'mex.1',name:'Liga MX',flag:'🇲🇽'},
   {id:'col.1',name:'Liga Colombia',flag:'🇨🇴'},
@@ -963,9 +964,10 @@ function renderDetail(ev,sp,lid){
       ${isLive?`🔴 EN VIVO · ${per?`${per}T · `:''}${min}'`:isFin?'PARTIDO TERMINADO':dateStr}
     </div>
     <div class="sbrow">
-      <div class="sbteam">
+      <div class="sbteam" onclick="showTeamSchedule('${home.team?.id||''}','${lid}')" style="cursor:pointer">
         <div class="sblogo">${hlg?`<img src="${hlg}">`:'🏠'}</div>
         <div class="sbtname">${esc(home.team?.displayName||'Local')}</div>
+        <div style="font-size:10px;color:var(--green);margin-top:4px;font-weight:700">Ver próximos →</div>
       </div>
       <div class="sbcenter">
         <div class="sbscores">
@@ -975,9 +977,10 @@ function renderDetail(ev,sp,lid){
         </div>
         ${isLive?`<div class="sbmin">${min}'</div>`:''}
       </div>
-      <div class="sbteam">
+      <div class="sbteam" onclick="showTeamSchedule('${away.team?.id||''}','${lid}')" style="cursor:pointer">
         <div class="sblogo">${alg?`<img src="${alg}">`:'✈️'}</div>
         <div class="sbtname">${esc(away.team?.displayName||'Visit.')}</div>
+        <div style="font-size:10px;color:var(--green);margin-top:4px;font-weight:700">Ver próximos →</div>
       </div>
     </div>
   </div>
@@ -1070,61 +1073,55 @@ function posGroup(pos){
 
 // Build a visual pitch with players placed by formation
 function buildPitch(rosters){
-  // Colors per team
   const teamColors=[
-    {bg:'#3366ff',txt:'#fff'},
-    {bg:'#ff3333',txt:'#fff'},
+    {bg:'#3366ff',txt:'#fff'},  // home = blue
+    {bg:'#ff3333',txt:'#fff'},  // away = red
   ];
 
-  let pitchHtml=`<div class="pitch-title">Alineación <span></span></div>
-  <div class="pitch" id="pitch-field">
-    <div class="pitch-lines">${pitchSVG()}</div>
-    <div class="pitch-players" id="pitch-players"></div>
-  </div>`;
-
-  // Bench players
+  // Build players HTML for pitch
+  let playersOnPitch='';
   let benchHtml='';
+
   for(let ri=0;ri<rosters.length;ri++){
     const roster=rosters[ri];
     const color=teamColors[ri]||teamColors[0];
     const tname=roster.team?.displayName||'';
     const entries=roster.roster||[];
-    const starters=entries.filter(e=>e.starter&&!e.didNotPlay);
-    const bench=entries.filter(e=>!e.starter&&!e.didNotPlay);
+    const starters=entries.filter(e=>e.starter!==false&&!e.didNotPlay);
+    const bench=entries.filter(e=>e.starter===false&&!e.didNotPlay);
 
-    // Place starters on pitch
+    // Group starters by position
     const byPos={GK:[],DEF:[],MID:[],FWD:[]};
     for(const e of starters){
       const pg=posGroup(e.position?.abbreviation||'');
       byPos[pg].push(e);
     }
 
-    // Y positions: home team top half, away team bottom half
-    const isHome=ri===0;
-    const rowY=isHome
-      ?{GK:88,DEF:72,MID:55,FWD:38}
-      :{GK:12,DEF:28,MID:45,FWD:62};
+    // ri=0 home: attacks upward (GK at bottom ~90%, FWD at ~15%)
+    // ri=1 away: attacks downward (GK at top ~10%, FWD at ~85%)
+    const rowY = ri===0
+      ? {GK:90, DEF:73, MID:55, FWD:37}
+      : {GK:10, DEF:27, MID:45, FWD:63};
 
     for(const [pg,players] of Object.entries(byPos)){
       if(!players.length) continue;
       const y=rowY[pg];
       const n=players.length;
       players.forEach((e,i)=>{
-        const x=(i+1)/(n+1)*100;
+        const x=Math.round((i+1)/(n+1)*100);
         const a=e.athlete||{};
         const stats=e.stats||[];
         const sm={};for(const s of stats) sm[s.name]=s.displayValue||s.value||'0';
         const goals=sm.goals||sm.goalsScored||'';
         const yellows=sm.yellowCards||'';
         const reds=sm.redCards||'';
-        const rating=sm.rating||'';
         const jersey=e.jersey||'';
         const name=a.displayName||a.shortName||a.lastName||'?';
-        const shortName=name.split(' ').pop();
-        const pkey=`p_${ri}_${i}_${pg}`;
+        const shortName=name.split(' ').slice(-1)[0];
+        const pkey=`p_${ri}_${pg}_${i}`;
         window._pc[pkey]={name,pos:pg,stats,jersey};
 
-        pitchHtml+=`<div class="pitch-player" style="left:${x}%;top:${y}%" onclick="showPlayer('${pkey}')">
+        playersOnPitch+=`<div class="pitch-player" style="left:${x}%;top:${y}%" onclick="showPlayer('${pkey}')">
           <div class="pp-avatar" style="background:${color.bg};color:${color.txt}">
             <span class="pp-num">${jersey}</span>
             ${goals&&goals!=='0'?'<div class="pp-badge">⚽</div>':''}
@@ -1136,7 +1133,7 @@ function buildPitch(rosters){
       });
     }
 
-    // Bench section
+    // Bench
     if(bench.length){
       benchHtml+=`<div class="bench-section" style="padding:0 20px">
         <div class="bench-title">${esc(tname)} — Suplentes <span></span></div>`;
@@ -1172,13 +1169,20 @@ function buildPitch(rosters){
     }
   }
 
-  // Inject pitch players after render
-  setTimeout(()=>{
-    const pp=document.getElementById('pitch-players');
-    if(pp) pp.innerHTML=pitchHtml.match(/<div class="pitch-player"[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/g)?.join('')||'';
-  },100);
+  // Team name labels on pitch
+  const homeName=rosters[0]?.team?.displayName||'Local';
+  const awayName=rosters[1]?.team?.displayName||'Visit.';
 
-  return pitchHtml+benchHtml;
+  return `
+  <div class="pitch-title">Alineación <span></span></div>
+  <div class="pitch">
+    <div class="pitch-lines">${pitchSVG()}</div>
+    <!-- Team labels -->
+    <div style="position:absolute;top:4%;left:50%;transform:translateX(-50%);font-size:9px;font-weight:800;color:rgba(255,165,0,.8);text-transform:uppercase;letter-spacing:.06em;text-shadow:0 1px 3px #000a;white-space:nowrap">${esc(awayName)}</div>
+    <div style="position:absolute;bottom:4%;left:50%;transform:translateX(-50%);font-size:9px;font-weight:800;color:rgba(100,180,255,.8);text-transform:uppercase;letter-spacing:.06em;text-shadow:0 1px 3px #000a;white-space:nowrap">${esc(homeName)}</div>
+    <div class="pitch-players">${playersOnPitch}</div>
+  </div>
+  ${benchHtml}`;
 }
 
 function pitchSVG(){
@@ -1238,6 +1242,75 @@ function showPlayer(key){
   pp.classList.add('open');
 }
 function closePP(){$('pp').classList.remove('open')}
+async function showTeamSchedule(teamId, lid){
+  if(!teamId) return;
+  // Abrir panel de equipo sobre el overlay
+  const pp=$('pp');
+  pp.innerHTML=`<div class="pphdr">
+    <div class="ovback" onclick="closePP()">←</div>
+    <div class="ppname"><h3>Próximos partidos</h3><small>Cargando...</small></div>
+  </div>
+  <div id="team-sched" style="padding:16px;display:flex;flex-direction:column;gap:8px">
+    <div class="sk" style="height:70px;border-radius:12px"></div>
+    <div class="sk" style="height:70px;border-radius:12px"></div>
+    <div class="sk" style="height:70px;border-radius:12px"></div>
+  </div>`;
+  pp.classList.add('open');
+
+  try{
+    const url=`https://site.api.espn.com/apis/site/v2/sports/soccer/${lid}/teams/${teamId}/schedule`;
+    const r=await fetch(url);
+    if(!r.ok) throw new Error('No data');
+    const d=await r.json();
+    const events=(d.events||[]).filter(e=>e.status?.type?.state==='pre'||e.status?.type?.state==='in');
+    const teamName=d.team?.displayName||'Equipo';
+    const teamLogo=d.team?.logos?.[0]?.href||'';
+
+    pp.querySelector('.ppname h3').textContent=teamName;
+    pp.querySelector('.ppname small').textContent='Próximos partidos';
+
+    const sched=$('team-sched');
+    if(!events.length){
+      sched.innerHTML=`<div class="empty"><span class="emico" style="font-size:32px">📅</span><div class="emtxt">No hay próximos partidos programados</div></div>`;
+      return;
+    }
+
+    sched.innerHTML=events.slice(0,8).map(ev=>{
+      const comp=ev.competitions?.[0];
+      const home=comp?.competitors?.find(c=>c.homeAway==='home')||comp?.competitors?.[0];
+      const away=comp?.competitors?.find(c=>c.homeAway==='away')||comp?.competitors?.[1];
+      if(!home||!away) return '';
+      const isLive=ev.status?.type?.state==='in';
+      const dateStr=ev.date?new Date(ev.date).toLocaleDateString('es',{weekday:'short',day:'numeric',month:'short'})+' '+new Date(ev.date).toLocaleTimeString('es',{hour:'2-digit',minute:'2-digit'}):'';
+      const hlg=home.team?.logos?.[0]?.href||'';
+      const alg=away.team?.logos?.[0]?.href||'';
+      const hs=home.score||'',as=away.score||'';
+      return `<div style="background:var(--bg3);border-radius:12px;padding:14px 16px;border:1px solid var(--line2)">
+        <div style="font-size:10px;color:var(--t3);font-family:var(--mono);margin-bottom:10px;text-transform:uppercase;letter-spacing:.05em">${isLive?'<span style="color:var(--live)">🔴 EN VIVO</span>':dateStr}</div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <div style="flex:1;display:flex;flex-direction:column;gap:6px">
+            <div style="display:flex;align-items:center;gap:8px">
+              <div style="width:20px;height:20px;border-radius:50%;background:var(--bg4);overflow:hidden;flex-shrink:0">${hlg?`<img src="${hlg}" style="width:100%;height:100%;object-fit:cover">`:''}</div>
+              <span style="font-size:13px;font-weight:600">${esc(home.team?.displayName||'Local')}</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <div style="width:20px;height:20px;border-radius:50%;background:var(--bg4);overflow:hidden;flex-shrink:0">${alg?`<img src="${alg}" style="width:100%;height:100%;object-fit:cover">`:''}</div>
+              <span style="font-size:13px;font-weight:600">${esc(away.team?.displayName||'Visit.')}</span>
+            </div>
+          </div>
+          ${isLive||hs?`<div style="display:flex;flex-direction:column;align-items:center;gap:6px">
+            <div style="font-family:var(--mono);font-size:16px;font-weight:700;color:${isLive?'var(--live)':'var(--text)'}">${hs||'-'}</div>
+            <div style="font-family:var(--mono);font-size:16px;font-weight:700;color:${isLive?'var(--live)':'var(--text)'}">${as||'-'}</div>
+          </div>`:''}
+        </div>
+      </div>`;
+    }).join('');
+  }catch(e){
+    const sched=$('team-sched');
+    if(sched) sched.innerHTML=`<div class="empty"><span class="emico" style="font-size:32px">⚠️</span><div class="emtxt">No se pudo cargar el calendario</div></div>`;
+  }
+}
+
 function closeOverlay(){$('overlay').classList.remove('open');curMatchId=null}
 
 // ── Favorites ──────────────────────────────────────────────────────────────
