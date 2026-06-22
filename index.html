@@ -508,6 +508,7 @@ button{border:none;background:none;font-family:var(--font);cursor:pointer}
     </div>
     <div class="pills" id="pills">
       <button class="pill active" data-sp="soccer" onclick="setSport('soccer')">⚽ Fútbol <div class="live-dot"></div></button>
+      <button class="pill" data-sp="chile" onclick="setSport('chile')">🇨🇱 Chile</button>
       <button class="pill" data-sp="basketball" onclick="setSport('basketball')">🏀 Básquet</button>
       <button class="pill" data-sp="tennis" onclick="setSport('tennis')">🎾 Tenis</button>
       <button class="pill" data-sp="mma" onclick="setSport('mma')">🥊 UFC</button>
@@ -622,7 +623,7 @@ function pickDate(i){dateIdx=i;buildDates();loadSport(sport)}
 function setSport(s){
   sport=s;
   document.querySelectorAll('.pill').forEach(p=>p.classList.toggle('active',p.dataset.sp===s));
-  $('filters').style.display=s==='soccer'?'flex':'none';
+  $('filters').style.display=(s==='soccer'||s==='chile')?'flex':'none';
   loadSport(s);
 }
 function setFilter(f,el){
@@ -643,6 +644,7 @@ function loadSport(s){
   if(s==='soccer') loadSoccer();
   else if(s==='basketball') loadBball();
   else if(s==='tennis') loadTennis();
+  else if(s==='chile') loadChile();
   else if(s==='mma') loadMMA();
 }
 
@@ -674,6 +676,7 @@ const LEAGUES=[
   {id:'usa.1',name:'MLS',flag:'🇺🇸'},
   {id:'arg.1',name:'Liga Argentina',flag:'🇦🇷'},
   {id:'chi.1',name:'Primera Chile',flag:'🇨🇱'},
+  {id:'chi.copa_chi',name:'Copa Chile',flag:'🏆'},
   {id:'chi.2',name:'Primera B Chile',flag:'🇨🇱'},
   {id:'bra.1',name:'Brasileirao',flag:'🇧🇷'},
   {id:'mex.1',name:'Liga MX',flag:'🇲🇽'},
@@ -733,7 +736,7 @@ function soccerCard(ev){
   const min=ev.status?.displayClock||'';
   const isFav=favs.includes(ev.id);
   return `${isLive?'<div class="lstrip"></div>':''}
-  <div class="mcard ${isLive?'live-card':''}" onclick="openMatch('${ev.id}','soccer')">
+  <div class="mcard ${isLive?'live-card':''}" onclick="openMatch('${ev.id}',sport)">
     <div class="mtime">
       ${isLive?`<div class="mtime-l live">LIVE</div><div class="mtime-min">${min}'</div>`:
         isFin?`<div class="mtime-fin">FIN</div>`:
@@ -749,6 +752,71 @@ function soccerCard(ev){
     </div>
     <div class="mfav ${isFav?'on':''}" onclick="event.stopPropagation();toggleFav('${ev.id}',this)">${isFav?'★':'☆'}</div>
   </div>`;
+}
+
+// ── Chile ─────────────────────────────────────────────────────────────────────
+const CHILE_LEAGUES=[
+  {id:'chi.1',name:'Primera División',flag:'🇨🇱'},
+  {id:'chi.copa_chi',name:'Copa Chile',flag:'🏆'},
+  {id:'chi.2',name:'Primera B',flag:'🇨🇱'},
+];
+
+async function loadChile(){
+  showSk();
+  const dk=DATES[dateIdx].key;
+  // Cargar todas las ligas chilenas + buscar en fechas cercanas si no hay resultados hoy
+  const datesToTry=[dk];
+  // Agregar días cercanos para no perder partidos
+  for(let i=-2;i<=3;i++){
+    const d=new Date();d.setDate(d.getDate()+i);
+    const y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,'0'),day=String(d.getDate()).padStart(2,'0');
+    const dk2=`${y}${m}${day}`;
+    if(!datesToTry.includes(dk2)) datesToTry.push(dk2);
+  }
+
+  const res=await Promise.allSettled(
+    CHILE_LEAGUES.map(async l=>{
+      // Intentar fecha seleccionada primero
+      const r=await fetch(`https://site.api.espn.com/apis/site/v2/sports/soccer/${l.id}/scoreboard?dates=${dk}`)
+        .then(r=>r.ok?r.json():null).catch(()=>null);
+      let events=r?.events||[];
+      // Si no hay eventos, buscar en fechas cercanas
+      if(!events.length){
+        for(const d2 of datesToTry.slice(1)){
+          try{
+            const r2=await fetch(`https://site.api.espn.com/apis/site/v2/sports/soccer/${l.id}/scoreboard?dates=${d2}`);
+            if(!r2.ok) continue;
+            const d3=await r2.json();
+            if(d3.events?.length){events=d3.events;break;}
+          }catch(e){}
+        }
+      }
+      return {...l, events:events.map(e=>({...e,_lid:l.id,_ln:l.name}))};
+    })
+  );
+
+  data.chile=res.filter(r=>r.status==='fulfilled'&&r.value).map(r=>r.value);
+  const c=$('content');
+  let html='';
+  let hasAny=false;
+
+  for(const lg of data.chile){
+    const evts=filt(lg.events||[]);
+    if(!evts.length) continue;
+    hasAny=true;
+    html+=`<div>
+      <div class="lghdr" onclick="toggleLg(this)">
+        <span class="lgflag">${lg.flag}</span>
+        <span class="lgname">${lg.name}</span>
+        <span class="lgcount">${evts.length}</span>
+        <span class="lgchev">▼</span>
+      </div>
+      <div class="lgmatches">`;
+    for(const ev of evts) html+=soccerCard(ev);
+    html+=`</div></div>`;
+  }
+
+  c.innerHTML=hasAny?html:`<div class="empty"><span class="emico">🇨🇱</span><div class="emtxt">No hay partidos chilenos disponibles para esta fecha</div></div>`;
 }
 
 // ── Basketball ─────────────────────────────────────────────────────────────
@@ -923,8 +991,9 @@ async function openMatch(id,sp){
     <div class="sk" style="height:70px;border-radius:8px"></div>
   </div>`;
   let ev=null,lid='';
-  if(sp==='soccer'){
-    for(const lg of(data.soccer||[])){
+  if(sp==='soccer'||sp==='chile'){
+    const srcData=[...(data.soccer||[]),...(data.chile||[])];
+    for(const lg of srcData){
       const f=lg.events?.find(e=>e.id===id);
       if(f){ev=f;ev._ln=lg.name;lid=lg.id;break;}
     }
