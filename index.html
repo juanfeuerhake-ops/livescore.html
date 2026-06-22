@@ -340,10 +340,10 @@ button{border:none;background:none;font-family:var(--font);cursor:pointer}
 }
 .pp-badge{
   position:absolute;top:-4px;right:-4px;
-  width:12px;height:12px;border-radius:50%;
-  background:var(--bg);border:1px solid var(--bg);
+  width:14px;height:14px;border-radius:50%;
+  background:var(--bg);border:1.5px solid var(--bg2);
   display:flex;align-items:center;justify-content:center;
-  font-size:8px
+  font-size:9px;z-index:2
 }
 .pp-name{
   font-size:9px;font-weight:700;color:#fff;
@@ -1097,11 +1097,13 @@ function buildPitch(rosters){
       byPos[pg].push(e);
     }
 
-    // ri=0 home: attacks upward (GK at bottom ~90%, FWD at ~15%)
-    // ri=1 away: attacks downward (GK at top ~10%, FWD at ~85%)
+    // Home (ri=0): ocupa mitad INFERIOR del campo (y: 55% → 97%)
+    // GK en el fondo (97%), líneas hacia arriba en su mitad
+    // Away (ri=1): ocupa mitad SUPERIOR del campo (y: 3% → 45%)
+    // GK en la cima (3%), líneas hacia abajo en su mitad
     const rowY = ri===0
-      ? {GK:90, DEF:73, MID:55, FWD:37}
-      : {GK:10, DEF:27, MID:45, FWD:63};
+      ? {GK:95, DEF:80, MID:67, FWD:57}
+      : {GK:5,  DEF:20, MID:33, FWD:43};
 
     for(const [pg,players] of Object.entries(byPos)){
       if(!players.length) continue;
@@ -1188,7 +1190,7 @@ function buildPitch(rosters){
 function pitchSVG(){
   return `<svg viewBox="0 0 100 154" xmlns="http://www.w3.org/2000/svg" style="opacity:.35">
     <rect x="5" y="5" width="90" height="144" rx="2" fill="none" stroke="white" stroke-width=".8"/>
-    <line x1="5" y1="77" x2="95" y2="77" stroke="white" stroke-width=".8"/>
+    <line x1="5" y1="77" x2="95" y2="77" stroke="rgba(255,255,255,.6)" stroke-width="1"/>
     <circle cx="50" cy="77" r="9" fill="none" stroke="white" stroke-width=".8"/>
     <circle cx="50" cy="77" r=".8" fill="white"/>
     <!-- Top penalty area -->
@@ -1258,20 +1260,58 @@ async function showTeamSchedule(teamId, lid){
   pp.classList.add('open');
 
   try{
-    const url=`https://site.api.espn.com/apis/site/v2/sports/soccer/${lid}/teams/${teamId}/schedule`;
-    const r=await fetch(url);
-    if(!r.ok) throw new Error('No data');
-    const d=await r.json();
-    const events=(d.events||[]).filter(e=>e.status?.type?.state==='pre'||e.status?.type?.state==='in');
-    const teamName=d.team?.displayName||'Equipo';
-    const teamLogo=d.team?.logos?.[0]?.href||'';
+    // Intentar múltiples endpoints para obtener el calendario del equipo
+    let events=[], teamName='Equipo', teamLogo='';
+    const urls=[
+      `https://site.api.espn.com/apis/site/v2/sports/soccer/${lid}/teams/${teamId}/schedule`,
+      `https://site.api.espn.com/apis/site/v2/sports/soccer/${lid}/scoreboard`,
+    ];
+    
+    // Primer intento: schedule del equipo
+    try{
+      const r=await fetch(urls[0]);
+      if(r.ok){
+        const d=await r.json();
+        teamName=d.team?.displayName||'Equipo';
+        teamLogo=d.team?.logos?.[0]?.href||'';
+        // Incluir todos los eventos (pasados recientes + futuros)
+        const allEvs=d.events||[];
+        // Próximos primero
+        events=allEvs.filter(e=>e.status?.type?.state==='pre'||e.status?.type?.state==='in');
+        // Si no hay próximos, mostrar los últimos jugados
+        if(!events.length) events=allEvs.filter(e=>e.status?.type?.state==='post').slice(-5);
+      }
+    }catch(e){}
+    
+    // Si el primer endpoint falla, buscar en el scoreboard general
+    if(!events.length){
+      try{
+        // Buscar próximos en el scoreboard general con fechas futuras
+        const futureKeys=[];
+        for(let i=1;i<=14;i++){
+          const d=new Date();d.setDate(d.getDate()+i);
+          const y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,'0'),day=String(d.getDate()).padStart(2,'0');
+          futureKeys.push(`${y}${m}${day}`);
+        }
+        for(const dk of futureKeys.slice(0,7)){
+          const r=await fetch(`https://site.api.espn.com/apis/site/v2/sports/soccer/${lid}/scoreboard?dates=${dk}`);
+          if(!r.ok) continue;
+          const d=await r.json();
+          const teamEvs=(d.events||[]).filter(ev=>
+            ev.competitions?.[0]?.competitors?.some(c=>c.team?.id===teamId||c.id===teamId)
+          );
+          events.push(...teamEvs);
+          if(events.length>=3) break;
+        }
+      }catch(e){}
+    }
 
     pp.querySelector('.ppname h3').textContent=teamName;
-    pp.querySelector('.ppname small').textContent='Próximos partidos';
+    pp.querySelector('.ppname small').textContent=events.some(e=>e.status?.type?.state==='pre')?'Próximos partidos':'Últimos partidos';
 
     const sched=$('team-sched');
     if(!events.length){
-      sched.innerHTML=`<div class="empty"><span class="emico" style="font-size:32px">📅</span><div class="emtxt">No hay próximos partidos programados</div></div>`;
+      sched.innerHTML=`<div class="empty"><span class="emico" style="font-size:32px">📅</span><div class="emtxt">No se encontraron partidos para este equipo en esta liga</div></div>`;
       return;
     }
 
@@ -1332,8 +1372,65 @@ function toggleSearch(){
   if(srchOpen) $('srchinp').focus();
 }
 function doSearch(){
-  const q=$('srchinp').value.toLowerCase();
+  const q=$('srchinp').value.toLowerCase().trim();
+  if(!q){
+    document.querySelectorAll('.mcard,.tennis-card').forEach(c=>c.style.display='flex');
+    document.querySelectorAll('.lgmatches').forEach(lm=>lm.style.display='block');
+    return;
+  }
+  // Mostrar/ocultar cards
   document.querySelectorAll('.mcard,.tennis-card').forEach(c=>c.style.display=c.textContent.toLowerCase().includes(q)?'flex':'none');
+  // Mostrar ligas que tengan resultados
+  document.querySelectorAll('.lghdr').forEach(hdr=>{
+    const matches=hdr.nextElementSibling;
+    if(!matches) return;
+    const visible=[...matches.querySelectorAll('.mcard,.tennis-card')].some(c=>c.style.display!=='none');
+    hdr.style.display=visible?'flex':'none';
+    if(matches) matches.style.display=visible?'block':'none';
+  });
+  // Si busca Colo-Colo o equipo chileno, cargar liga chilena
+  const CHILEAN=['colo','colo-colo','universidad de chile','u de chile','la u','audax','palestino','huachipato','everton','curicó','iquique','cobreloa','cobresal','deportes antofagasta'];
+  if(CHILEAN.some(t=>q.includes(t)||t.includes(q))){
+    loadChileanSearch(q);
+  }
+}
+
+async function loadChileanSearch(q){
+  // Cargar las próximas 7 fechas de la Primera Chile buscando al equipo
+  const dates=[];
+  for(let i=-3;i<=7;i++){
+    const d=new Date();d.setDate(d.getDate()+i);
+    const y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,'0'),day=String(d.getDate()).padStart(2,'0');
+    dates.push(`${y}${m}${day}`);
+  }
+  for(const dk of dates){
+    try{
+      const r=await fetch(`https://site.api.espn.com/apis/site/v2/sports/soccer/chi.1/scoreboard?dates=${dk}`);
+      if(!r.ok) continue;
+      const d=await r.json();
+      const evts=(d.events||[]).filter(ev=>
+        ev.competitions?.[0]?.competitors?.some(c=>
+          (c.team?.displayName||'').toLowerCase().includes(q)||
+          (c.team?.name||'').toLowerCase().includes(q)
+        )
+      );
+      if(!evts.length) continue;
+      // Mostrar resultados
+      const c=$('content');
+      const existing=document.getElementById('chile-search-results');
+      if(!existing){
+        const div=document.createElement('div');
+        div.id='chile-search-results';
+        div.style.cssText='background:var(--bg2);border-bottom:1px solid var(--line)';
+        div.innerHTML=`<div class="lghdr" style="position:sticky;top:0"><span class="lgflag">🇨🇱</span><span class="lgname">Primera Chile</span></div><div class="lgmatches" id="chile-results-inner"></div>`;
+        c.prepend(div);
+      }
+      const inner=document.getElementById('chile-results-inner');
+      if(inner){
+        evts.forEach(ev=>{inner.innerHTML+=soccerCard({...ev,_lid:'chi.1',_ln:'Primera Chile'});});
+      }
+    }catch(e){}
+  }
 }
 
 // ── Utils ──────────────────────────────────────────────────────────────────
